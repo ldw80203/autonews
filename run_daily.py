@@ -15,7 +15,7 @@ import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from src import collect, db, gates, image, imagespec, publish, rank, review, schedule, write
+from src import collect, db, gates, image, imagespec, photo, publish, rank, review, schedule, write
 from src import select as sel
 from src.common import ROOT, TZ, as_taipei, cjk_ratio, load_config, redact, slugify, write_json
 
@@ -95,6 +95,7 @@ def fetch_sources(topic: dict, cfg: dict, now: datetime | None = None, limit: in
         text = art["text"]
         s["ok"], s["text"], s["error"] = bool(text), text or "", art["error"]
         s["final_url"] = art.get("final_url") or s["url"]
+        s["image_url"] = art.get("image_url")
         # 時效用時間一律 strict：沒有明確時區（naive、未知縮寫、-0000）視同沒有發佈時間
         pub = art["published"] or collect.parse_date_tolerant(s.get("rss_published"), strict=True)
         if pub is not None and (pub.tzinfo is None or pub.utcoffset() is None):
@@ -117,10 +118,12 @@ def fetch_sources(topic: dict, cfg: dict, now: datetime | None = None, limit: in
 
 
 def max_age_hours(topic: dict, cfg: dict) -> float | None:
-    """時效上限；[freshness] unlimited_categories（奇聞）回 None = 不檢查多舊。"""
-    if rank.topic_category(topic) in cfg["freshness"].get("unlimited_categories", []):
+    """時效上限；[freshness] unlimited_categories（奇聞）回 None = 不檢查多舊；
+    [rank] max_age_hours_by_category 有列的類別（人間故事、國際）用該上限，其餘用 max_age_hours。"""
+    cat = rank.topic_category(topic)
+    if cat in cfg["freshness"].get("unlimited_categories", []):
         return None
-    return cfg["freshness"]["max_age_hours"]
+    return cfg.get("rank", {}).get("max_age_hours_by_category", {}).get(cat, cfg["freshness"]["max_age_hours"])
 
 
 def source_age_problem(s: dict, slot: datetime, cfg: dict, max_age: float | None = -1) -> str | None:
@@ -229,6 +232,26 @@ def process_topic(topic: dict, cfg: dict, terms: list[str], post_root: Path, slo
     tag_texts = [topic["keyword"]] + [s.get("title") or "" for s in oks]
     img_prompt = image.scene_prompt(image.scene_for(topic))  # 固定模板，不含任何來源/模型文字
 
+    # 2026-11-10：配圖來源 original = 來源頁 og:image 原圖。先下載（caption 的 AI 聲明取決於 image_kind，
+    # 必須在稿件閘門前定案；沒原圖又不退回 AI 就不必浪費寫稿額度）。圖片與網址不會傳給 codex / claude。
+    image_kind = "ai"
+    if cfg["image"].get("source", "ai") == "original":
+        fails: list[str] = []
+        got = False
+        for purl in photo.pick_photos(topic["sources"])[:cfg["image"].get("max_photo_tries", 4)]:  # 依序試，第一個成功的就用
+            ensure_budget(2 * cfg["timeouts"]["http"], "下載原圖")  # 每次下載的總時限是 2 倍 http timeout
+            got, w1 = photo.download_photo(purl, post_dir / "image.png", cfg)
+            if got:
+                break
+            fails.append(f"{sel.domain_of(purl) or purl[:40]}：{w1}")
+        pwhy = ("；".join(fails) if fails else "來源沒有 og:image")[:200]
+        if got:
+            image_kind = "original"
+        elif not cfg["image"].get("fallback_ai", False):
+            return None, None, "", [], f"無可用原圖：{pwhy}"
+        else:
+            log(f"無可用原圖（{pwhy}），退回 AI 生圖")
+
     feedback, draft, caption, cited = None, None, "", []
     attempts = 1 + cfg["run"].get("max_rewrites", 1)
     for attempt in range(1, attempts + 1):  # 被退回時帶著原因重寫；每一版稿件都完整重跑所有閘門
@@ -239,6 +262,9 @@ def process_topic(topic: dict, cfg: dict, terms: list[str], post_root: Path, slo
             return None, None, "", [], f"改寫失敗：{err}"
         draft["hashtags"] = gates.sanitize_hashtags(draft["hashtags"], tag_texts, cfg["hashtags"]["whitelist"])
         draft["image_prompt"] = img_prompt
+        draft["image_kind"] = image_kind
+        if not isinstance(draft.get("title_highlight"), str):
+            draft.pop("title_highlight", None)
         draft["category"] = topic["category"]
         write_json(post_dir / "draft.json", draft)
         ok, why, caption = gates.draft_gate(draft, urls, texts, cfg, terms, tag_texts, topic["keyword"])
@@ -246,7 +272,17 @@ def process_topic(topic: dict, cfg: dict, terms: list[str], post_root: Path, slo
             check_stop()
             if cfg["review"].get("ai_review", True):
                 ensure_budget(max(cfg["timeouts"]["codex_review"], cfg["timeouts"].get("claude_review", 0)), "事實關")  # 雙審同時跑，取較大者
-                ok, why, raw = review.review(post_dir, draft, topic, caption, cfg, ptime)
+                img_path, img_bytes = post_dir / "image.png", None
+                try:
+                    if image_kind == "original":  # 原圖不准留在 codex 看得到的任何磁碟位置：審稿期間只存在記憶體
+                        img_bytes = img_path.read_bytes()
+                        img_path.unlink()
+                    ok, why, raw = review.review(post_dir, draft, topic, caption, cfg, ptime)
+                finally:
+                    if img_bytes is not None:
+                        img_path.write_bytes(img_bytes)
+                        if _sha256(img_path) != hashlib.sha256(img_bytes).hexdigest():
+                            raise RuntimeError("審稿後還原原圖的雜湊不符")
             else:  # 2026-11-09 使用者裁示：取消 AI 審稿，只留確定性閘門；來源行列出全部合格來源
                 ok, why, raw = True, "AI 審稿已關閉", {"_cited_urls": urls}
             if ok:
@@ -274,7 +310,12 @@ def process_topic(topic: dict, cfg: dict, terms: list[str], post_root: Path, slo
     if not image.is_template_prompt(draft["image_prompt"]):
         return None, None, "", [], "配圖關：image_prompt 不是固定模板"
     content_ok = False
-    if cfg["image"].get("content_image", True):
+    if image_kind == "original":
+        err = image.add_headline(post_dir / "image.png", draft["title"], cfg, highlight=draft.get("title_highlight"))
+        if err:
+            return None, None, "", [], f"配圖標題失敗：{err}"
+        content_ok = True
+    elif cfg["image"].get("content_image", True):
         try:  # 依每篇內容配圖（圖中含標題＋重點句）；任何一步不行就退回固定模板
             ensure_budget(2 * cfg["timeouts"]["codex_image"] + 2 * cfg["timeouts"]["claude"], "依內容配圖")
             img, info = imagespec.make_image(post_dir, draft, cfg)
@@ -288,10 +329,11 @@ def process_topic(topic: dict, cfg: dict, terms: list[str], post_root: Path, slo
         _img, err = image.generate_image(post_dir, draft["image_prompt"], cfg)
         if err:
             return None, None, "", [], f"配圖失敗：{err}"
-        err = image.add_headline(post_dir / "image.png", draft["title"], cfg)
+        err = image.add_headline(post_dir / "image.png", draft["title"], cfg, highlight=draft.get("title_highlight"))
         if err:
             return None, None, "", [], f"配圖標題失敗：{err}"
     write_json(post_dir / "artifact.json", {"image_sha256": _sha256(post_dir / "image.png"),
+                                            "image_kind": image_kind,
                                             "caption_sha256": hashlib.sha256(caption.encode("utf-8")).hexdigest()})
     return post_dir, draft, caption, cited, ""
 
@@ -400,7 +442,13 @@ def main(argv: list[str] | None = None) -> int:
     log(f"收集 {len(topics)} 個話題，錯誤 {len(errors)}")
     cands, rejected = sel.prefilter(topics, terms, con, cfg)
     dropped += rejected
-    cands, skipped = rank.rank(cands, con, cfg, now)
+    rank_cfg = cfg
+    try:
+        ensure_budget(cfg["timeouts"]["claude"], "LLM 評分")
+    except DeadlineReached as e:  # 預算不足：關掉 LLM 評分（退回關鍵詞分數），不中止整輪
+        log(f"{e}；本輪排序不用 LLM 評分")
+        rank_cfg = dict(cfg, rank=dict(cfg["rank"], llm_judge=False))
+    cands, skipped = rank.rank(cands, con, rank_cfg, now)
     dropped += skipped
     log(f"預過濾＋排序後候選 {len(cands)}，丟棄 {len(rejected) + len(skipped)}")
     for t in cands[:5]:

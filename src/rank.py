@@ -6,6 +6,7 @@
 - 類別：8 類均衡輪替，今天發越少分越高，跟上一篇同類別再打折。政治不特別處理。
 - 媒體：今天越少用到的出版者分越高。
 - 好寫：有可信媒體來源、標題是中文。
+- 人間故事（2026-11-10）：標題命中 human_words 或 feed 類別「人間故事」加 human 分；政治類或標題含 gossip_words 總分乘 downrank_factor（降權不排除）。
 硬規則：Trends 題目完全沒有可信媒體來源就跳過（來源關一定擋，不浪費抓取時間）；同一則新聞只留最高分那篇。
 """
 from __future__ import annotations
@@ -18,10 +19,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .common import cjk_ratio
-from . import image
+from . import humanjudge, image
 from . import select as sel
 
-CATEGORIES = ["政治", "財經", "國際", "社會", "娛樂", "體育", "生活科技", "奇聞"]
+CATEGORIES = ["政治", "財經", "國際", "社會", "娛樂", "體育", "生活科技", "奇聞", "人間故事"]
 OTHER = "其他"
 
 _LTN_SUB = {"ec": "財經", "ent": "娛樂", "sports": "體育", "health": "生活科技", "3c": "生活科技", "def": "政治"}
@@ -133,6 +134,10 @@ def recent_titles(con, now: datetime, hours: float) -> list[str]:
     return [f"{t}（{kw}）" if t and t != kw else kw for kw, t in _recent_posts(con, now, hours)]
 
 
+def _total(parts: dict, weights: dict, down: float) -> float:
+    return round(sum(weights.get(k, 0) * parts[k] for k in parts if k in weights) * down, 1)
+
+
 def score(topic: dict, cfg: dict, now: datetime, history: list, coverage: int) -> tuple[float, dict]:
     rc, pubs = cfg["rank"], cfg["media"]["publishers"]
     cat = topic_category(topic)
@@ -147,7 +152,9 @@ def score(topic: dict, cfg: dict, now: datetime, history: list, coverage: int) -
         fresh = 0.3
     else:
         hours = (now - pub_dt).total_seconds() / 3600
-        fresh = 1.0 if hours <= 2 else max(0.0, 1 - (hours - 2) / 22)
+        # 有放寬時效的類別（人間故事、國際）：衰減區間改用該類別的上限
+        span = rc.get("max_age_hours_by_category", {}).get(cat, 24) - 2
+        fresh = 1.0 if hours <= 2 else max(0.0, 1 - (hours - 2) / max(span, 1))
     cats = [c for _s, _p, c in history]
     catv = 1 / (1 + cats.count(cat))
     if cats and cats[-1] == cat:
@@ -158,9 +165,14 @@ def score(topic: dict, cfg: dict, now: datetime, history: list, coverage: int) -
     titles = [topic.get("keyword", "")] + [s.get("title") or "" for s in topic.get("sources", [])]
     chinese = max(cjk_ratio(t) for t in titles) >= 0.5
     write = 0.5 * trusted + 0.5 * chinese
-    parts = {"heat": heat, "fresh": fresh, "category": catv, "publisher": pubv, "writable": write}
-    total = sum(rc["weights"][k] * v for k, v in parts.items())
-    return round(total, 1), dict(parts, cat=cat, pub_name=publisher, coverage=coverage)
+    human = max(1.0 if any(w in t for t in titles for w in rc.get("human_words", [])) else 0.0,
+                0.6 if cat == "人間故事" else 0.0)
+    parts = {"heat": heat, "fresh": fresh, "category": catv, "publisher": pubv,
+             "writable": write, "human": human}
+    down = rc.get("downrank_factor", 0.2) if (cat == "政治" or any(
+        w in t for t in titles for w in rc.get("gossip_words", []))) else 1.0
+    total = _total(parts, rc["weights"], down)
+    return total, dict(parts, cat=cat, pub_name=publisher, coverage=coverage, down=down)
 
 
 def rank(cands: list[dict], con, cfg: dict, now: datetime) -> tuple[list[dict], list[dict]]:
@@ -219,4 +231,24 @@ def rank(cands: list[dict], con, cfg: dict, now: datetime) -> tuple[list[dict], 
                 skipped.append({"keyword": m["keyword"], "reason": f"排序：同一則新聞，來源已併入「{best['keyword']}」"})
         out.append(best)
     out.sort(key=lambda x: x["rank"]["score"], reverse=True)
+    if rc.get("llm_judge") and out:
+        top = out[:rc.get("llm_judge_top", 20)]
+        scores = humanjudge.judge([t["keyword"] for t in top], cfg)
+        if scores is None:
+            skipped.append({"keyword": "", "reason": "排序：LLM 評分失敗，用關鍵詞"})
+        else:
+            lo = rc.get("llm_min_score", 6)
+            for t, sc in zip(top, scores):
+                r = t["rank"]
+                r["human"], r["llm"] = sc / 10, sc
+                r["score"] = _total(r, rc["weights"], r.get("down", 1.0))
+                if sc < lo:  # 被 LLM 否決：總分再降權
+                    r["score"] = round(r["score"] * rc.get("downrank_factor", 0.2), 1)
+
+            def tier(t):  # 0 = LLM 認可（LLM 分、總分高者在前）；1 = 未評分；2 = 被評分但低於門檻
+                r = t["rank"]
+                if "llm" not in r:
+                    return (1, -r["score"])
+                return (0, -r["llm"], -r["score"]) if r["llm"] >= lo else (2, -r["score"])
+            out.sort(key=tier)
     return out, skipped

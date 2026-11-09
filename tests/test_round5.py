@@ -11,6 +11,7 @@ from src import select as sel
 from src.common import TZ, extract_json, load_config, parse_single_json
 
 CFG = load_config()
+CFG["image"]["source"] = "ai"  # 這些整合測試走 AI 配圖路徑；原圖模式見 test_photo_20261110.py
 MARK = write.COMMENT_MARK
 TERMS = sel.load_blocklist()
 R = CFG["relevance"]

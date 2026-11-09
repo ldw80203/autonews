@@ -1,10 +1,12 @@
 """收集：Google Trends 台灣 RSS + 自由時報 / ETtoday RSS；trafilatura 抓內文。"""
 from __future__ import annotations
 
+import html as _html
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import urljoin
 
 import feedparser
 import requests
@@ -144,8 +146,30 @@ def _get(url: str, timeout: int) -> bytes | None:
         return None
 
 
+_META_TAG = re.compile(r"<meta\s[^>]*>", re.I)
+_ATTR = re.compile(r"([\w:.-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", re.I)
+
+
+def extract_image_url(html_text: str, base_url: str) -> str | None:
+    """取 og:image，沒有就取 twitter:image；屬性順序、單雙引號皆可；相對網址用 base_url 轉絕對；只回 http(s)。"""
+    found: dict[str, str] = {}
+    for tag in _META_TAG.findall(html_text or ""):
+        attrs = {m.group(1).lower(): _html.unescape(m.group(2) if m.group(2) is not None else m.group(3))
+                 for m in _ATTR.finditer(tag)}
+        key = (attrs.get("property") or attrs.get("name") or "").strip().lower()
+        val = (attrs.get("content") or "").strip()
+        if key in ("og:image", "twitter:image") and val:
+            found.setdefault(key, val)
+    for key in ("og:image", "twitter:image"):
+        if key in found:
+            u = urljoin(base_url, found[key])
+            if u.lower().startswith(("http://", "https://")):
+                return u
+    return None
+
+
 def fetch_article(url: str, timeout: int = 20) -> dict:
-    """抓內文與發佈時間。回 {text, published(datetime|None，必帶時區), final_url, error}。任何失敗都不丟例外。
+    """抓內文與發佈時間。回 {text, published(datetime|None，必帶時區), final_url, image_url(og:image，沒有為 None), error}。任何失敗都不丟例外。
     final_url 是轉址後的實際網址：媒體身分以它為準。"""
     try:
         r = requests.get(url, headers=UA, timeout=timeout)
@@ -155,11 +179,11 @@ def fetch_article(url: str, timeout: int = 20) -> dict:
             r.encoding = r.apparent_encoding
         text = trafilatura.extract(r.text, include_comments=False, include_tables=False, favor_precision=True)
         if not text:
-            return {"text": None, "published": None, "final_url": final, "error": "extract_empty"}
+            return {"text": None, "published": None, "final_url": final, "image_url": None, "error": "extract_empty"}
         return {"text": text.strip(), "published": extract_published(r.text, strict=True), "final_url": final,
-                "error": None}
+                "image_url": extract_image_url(r.text, final), "error": None}
     except Exception as e:  # noqa: BLE001 - 單一來源失敗不得讓流程崩潰
-        return {"text": None, "published": None, "final_url": None, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+        return {"text": None, "published": None, "final_url": None, "image_url": None, "error": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
 def collect_topics(cfg: dict | None = None) -> tuple[list[dict], list[str]]:

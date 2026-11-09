@@ -16,8 +16,8 @@ def _t(kw, url, origin="rss", traffic=0, hours_ago=1.0, feed_cat=None, title=Non
 
 
 def test_config():
-    assert CFG["rank"]["weights"] == {"heat": 50, "fresh": 25, "category": 10, "publisher": 5, "writable": 10}
-    assert CFG["freshness"]["unlimited_categories"] == ["奇聞"]
+    assert CFG["rank"]["weights"] == {"heat": 50, "fresh": 25, "category": 10, "publisher": 5, "writable": 10, "human": 40}
+    assert CFG["freshness"]["unlimited_categories"] == []
 
 
 def test_topic_category_sources():
@@ -43,7 +43,7 @@ def test_trends_without_trusted_source_skipped():
 
 def test_heat_and_freshness_order():
     con = db.connect(":memory:")
-    hot = _t("黃仁勳婚外情風波延燒", "https://news.ltn.com.tw/news/world/breakingnews/1", origin="trends", traffic=50000)
+    hot = _t("黃仁勳訪台行程曝光", "https://news.ltn.com.tw/news/world/breakingnews/1", origin="trends", traffic=50000)
     fresh = _t("颱風路徑北修明起風雨增", "https://www.cna.com.tw/news/ahel/1.aspx", hours_ago=0.5)
     stale = _t("央行理監事會維持利率不變", "https://www.cna.com.tw/news/aie/1.aspx", hours_ago=20)
     out, _ = rank.rank([stale, fresh, hot], con, CFG, NOW)
@@ -65,12 +65,14 @@ def test_same_story_merged_and_coverage_counts_publishers():
     assert merged["rank"]["cat"] == "國際"
 
 
-def test_novelty_old_is_not_penalised_and_has_base_heat():
+def test_novelty_within_7_days_not_penalised_and_has_base_heat():
     con = db.connect(":memory:")
-    old = _t("平均73歲南韓最年長女團出道", "https://news.ltn.com.tw/news/novelty/breakingnews/1", hours_ago=24 * 30)
-    out, _ = rank.rank([old], con, CFG, NOW)
-    r = out[0]["rank"]
-    assert r["cat"] == "奇聞" and r["fresh"] == 1.0 and r["heat"] == 0.3
+    new = _t("平均73歲南韓最年長女團出道", "https://news.ltn.com.tw/news/novelty/breakingnews/1", hours_ago=1)
+    old = _t("百歲阿嬤開箱封存半世紀罐頭", "https://news.ltn.com.tw/news/novelty/breakingnews/2", hours_ago=24 * 30)
+    out, _ = rank.rank([new, old], con, CFG, NOW)
+    by = {t["keyword"]: t["rank"] for t in out}
+    assert by[new["keyword"]]["cat"] == "奇聞" and by[new["keyword"]]["fresh"] == 1.0 and by[new["keyword"]]["heat"] == 0.3
+    assert by[old["keyword"]]["fresh"] == 0.0
 
 
 def test_category_and_publisher_balance_from_today_posts(tmp_path):
@@ -90,14 +92,16 @@ def test_category_and_publisher_balance_from_today_posts(tmp_path):
     assert by[fin["keyword"]]["publisher"] == 0.5 and by[soc["keyword"]]["publisher"] == 1.0
 
 
-def test_freshness_gate_unlimited_for_novelty():
+def test_freshness_gate_novelty_7_days():
     slot = NOW + timedelta(hours=1)
     src = {"published": (NOW - timedelta(days=40)).isoformat(), "ok": True,
            "url": "https://news.ltn.com.tw/news/novelty/breakingnews/1"}
     novelty = {"keyword": "怪事", "sources": [dict(src)]}
     normal = {"keyword": "台股", "sources": [dict(src, url="https://ec.ltn.com.tw/article/breakingnews/1")]}
-    assert run_daily.max_age_hours(novelty, CFG) is None
-    assert run_daily.freshness_problem(novelty, slot, CFG) is None
+    assert run_daily.max_age_hours(novelty, CFG) == 168
+    assert "stale" in run_daily.freshness_problem(novelty, slot, CFG)  # 40 天 > 7 天
+    ok = {"keyword": "怪事", "sources": [dict(src, published=(NOW - timedelta(hours=160)).isoformat())]}
+    assert run_daily.freshness_problem(ok, slot, CFG) is None  # 160h < 168h
     assert "stale" in run_daily.freshness_problem(normal, slot, CFG)
     no_time = {"keyword": "怪事", "sources": [dict(src, published=None)]}
     assert "no_published_time" in run_daily.freshness_problem(no_time, slot, CFG)

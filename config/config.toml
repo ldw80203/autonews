@@ -66,6 +66,24 @@ name = "ETtoday"
 url = "https://feeds.feedburner.com/ettoday/pet"
 category = "奇聞"
 
+# 2026-11-10 使用者裁示：選題學「一分鐘新聞」——國際人間故事（感人、暖心、獵奇、反差、富豪奇事）；實測 HTTP 200
+[[rss_feeds]]
+name = "ETtoday"
+url = "https://feeds.feedburner.com/ettoday/global"
+category = "國際"
+[[rss_feeds]]
+name = "自由時報"
+url = "https://news.ltn.com.tw/rss/world.xml"
+category = "國際"
+[[rss_feeds]]
+name = "自由時報"
+url = "https://news.ltn.com.tw/rss/life.xml"
+category = "人間故事"
+[[rss_feeds]]
+name = "BBC中文"
+url = "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml"
+category = "國際"
+
 [timeouts]
 http = 20
 claude = 300
@@ -89,6 +107,7 @@ min_news_publishers = 1
 
 [schedule]
 # 2026-11-09 使用者裁示：24 小時、每小時一則。工作排程器每小時整點跑 --max 1，排到下一個整點。
+# 2026-11-10 改為每天 12:00、20:00 各一則（scripts/install_schedule.ps1，autonews-daily2）；slots 設定保留不用。
 slots = ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
          "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"]
 min_lead_minutes = 15
@@ -97,15 +116,28 @@ publish_now = true
 
 [rank]
 # 選文權重（src\rank.py）。2026-11-09 使用者裁示：熱度優先、類別均衡、政治照熱度不特別處理
-weights = { heat = 50, fresh = 25, category = 10, publisher = 5, writable = 10 }
+weights = { heat = 50, fresh = 25, category = 10, publisher = 5, writable = 10, human = 40 }
 # 沒有點閱數可量的類別給熱度基本分（0–1）
 heat_base = { "奇聞" = 0.3 }
+# 2026-11-10 人間故事加權：標題命中任一詞 human=1.0；feed 類別為「人間故事」human=0.6（取大者）
+human_words = ["感人", "暖心", "心願", "夢想", "奇蹟", "富豪", "億萬", "首富", "遺願", "臨終", "畢業", "婚禮", "求婚", "阿嬤", "阿公", "老翁", "老婦", "流浪", "獨居", "全球首", "最年輕", "最老", "寵物", "毛孩", "狗狗", "貓咪", "志工", "善心", "報恩", "重逢"]
+# 八卦詞：標題命中，或類別為政治，總分乘 downrank_factor（降權，不排除）
+gossip_words = ["外遇", "婚外情", "劈腿", "緋聞", "小三", "出軌", "偷吃", "離婚", "熱戀", "曬恩愛"]
+downrank_factor = 0.2
+# 2026-11-10 LLM 評分（src\humanjudge.py，主力）：排序後取前 N 名一次呼叫 claude 打 0–10 分，human 分項換成 分數/10；
+# 失敗退回上面的關鍵詞分數。human_words 降為備援。
+llm_judge = true
+llm_judge_top = 40
+# LLM 分 >= 此值才算「認可」，排最前（LLM 分高者先、同分看總分）；未評分者次之；低於此值的排最後且總分乘 downrank_factor
+llm_min_score = 6
 # 標題字元二元組 Jaccard >= 此值視為同一則新聞
 same_story_similarity = 0.35
 # 同一則新聞的其他家報導併進來源（寫稿整合多家說法），最多幾篇
 max_merged_sources = 4
 # 同一事件去重：最近幾小時內發過的貼文，標題相似直接跳過；寫稿模型再判斷是否同一起事件（含後續、反應）
 recent_post_hours = 48
+# 各類別時效上限（小時），沒列的類別用 [freshness] max_age_hours；unlimited_categories 仍不限。rank 的新鮮度衰減也用此上限
+max_age_hours_by_category = { "人間故事" = 72, "國際" = 36, "奇聞" = 168 }
 
 [language]
 # CJK 字比例門檻：話題標題、來源內文都必須達標，否則視為非中文
@@ -129,12 +161,22 @@ max_prompt_chars = 1500
 content_image = true
 # 生圖後由程式把稿件標題疊在圖片下方（2026-11-09 使用者要求附圖要有大標題）
 headline_font = 'C:\Windows\Fonts\msjhbd.ttc'
+# 2026-11-10 使用者裁示：配圖來源。"original" = 新聞原文 og:image 照片（不標示來源）＋程式疊字；"ai" = 沿用 Codex 生圖
+source = "original"
+# source = "original" 但沒有原圖或下載失敗時：true = 退回 AI 生圖；false = 跳過該話題
+fallback_ai = false
+# 原圖短邊（像素）下限，低於此值視為太小、不用
+min_photo_side = 400
+# 最多試幾個來源的原圖（每次下載總時限 = 2 倍 timeouts.http）
+max_photo_tries = 4
+# 站方預設圖（logo、分享預設圖）不是新聞照：圖片網址 path（不分大小寫）含任一字串就拒用，不下載
+photo_placeholder_patterns = ["pic_fb", "/assets/images/all/", "logo", "default", "og_default", "placeholder", "noimage", "no_image", "share_default"]
 
 [freshness]
 # slot 時間 - 最新來源發佈時間 超過此小時數就丟棄；來源抓不到發佈時間視為不合格來源
 max_age_hours = 18
-# 這些類別（src\rank.py 判斷）不檢查多舊、新鮮度不扣分；仍要求來源有發佈時間。2026-11-09 使用者裁示：奇聞不限
-unlimited_categories = ["奇聞"]
+# 這些類別（src\rank.py 判斷）不檢查多舊、新鮮度不扣分；仍要求來源有發佈時間。2026-11-09 奇聞不限；2026-11-10 改為奇聞 7 天（[rank] max_age_hours_by_category），此清單留空
+unlimited_categories = []
 # 來源發佈時間比現在晚超過此小時數，視為時間解析異常，來源不合格（2026-11-08 第五輪：2 -> 0.25，只容許時鐘誤差）
 max_future_hours = 0.25
 
@@ -199,6 +241,7 @@ whitelist = ["#新聞", "#時事", "#熱門", "#熱門話題", "#網友熱議", 
 "ctee.com.tw" = "旺旺中時"
 "ctwant.com" = "旺旺中時"
 "cna.com.tw" = "中央社"
+"bbc.com" = "BBC中文"
 "pts.org.tw" = "公視"
 "mirrormedia.mg" = "鏡傳媒"
 "mnews.tw" = "鏡傳媒"

@@ -30,7 +30,9 @@ class PublishUnknown(RuntimeError):
 
 def build_caption(draft: dict, source_urls: list[str]) -> str:
     """source_urls 保留參數相容；2026-11-09 使用者裁示：貼文不再列「來源：網址」行（來源網址仍記在 DB 與 post 目錄）。"""
-    parts = [draft["title"].strip(), "", draft["body"].strip(), "", DISCLAIMER]
+    parts = [draft["title"].strip(), "", draft["body"].strip()]
+    if draft.get("image_kind") != "original":  # 原圖不加；AI 圖（含沒標 image_kind 的舊稿）照舊加聲明
+        parts += ["", DISCLAIMER]
     if draft.get("hashtags"):
         parts += ["", " ".join(draft["hashtags"])]
     return "\n".join(parts)

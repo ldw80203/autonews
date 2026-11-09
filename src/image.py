@@ -98,7 +98,7 @@ def is_valid_image(path: Path) -> bool:
 
 
 _NO_LINE_START = set("，。、；：？！）」』》〉％%,.;:?!)]}")
-_MAX_HEADLINE_LINES = 3
+_MAX_HEADLINE_LINES = 2
 
 
 def _headline_tokens(title: str) -> list[str]:
@@ -135,7 +135,8 @@ def _wrap(draw, tokens: list[str], font, max_w: float) -> list[str]:
 
 
 def _layout(draw, title: str, max_w: float, img_w: int, font_path: str):
-    """回 (font, lines, size)。先試只在空白/標點斷行（字級由大到小）；都放不下才退回逐字斷行並縮字。"""
+    """回 (font, lines, size)。最多 2 行；先試只在空白/標點斷行（字級由大到小），再試逐字斷行（字級由大到小）；
+    縮到最小字級仍放不下 2 行，才排第 3 行（必要時繼續縮字，保證 <= 3 行）。"""
     from PIL import ImageFont
     phrases = _phrases(title)
     big, small = max(8, round(img_w * 0.085)), max(8, round(img_w * 0.055))
@@ -145,19 +146,42 @@ def _layout(draw, title: str, max_w: float, img_w: int, font_path: str):
             lines = _wrap(draw, phrases, f, max_w)
             if len(lines) <= _MAX_HEADLINE_LINES:
                 return f, lines, size
-    size = big
+    tokens = _headline_tokens(title)
+    for size in range(big, small - 1, -2):
+        f = ImageFont.truetype(font_path, size)
+        lines = _wrap(draw, tokens, f, max_w)
+        if len(lines) <= _MAX_HEADLINE_LINES:
+            return f, lines, size
+    size = small
     while True:
         f = ImageFont.truetype(font_path, size)
-        lines = _wrap(draw, _headline_tokens(title), f, max_w)
-        if len(lines) <= _MAX_HEADLINE_LINES or size <= 8:
+        lines = _wrap(draw, tokens, f, max_w)
+        if len(lines) <= _MAX_HEADLINE_LINES + 1 or size <= 8:
             return f, lines, size
         size = max(8, round(size * 0.9))
 
 
-def add_headline(path: Path, title: str, cfg: dict | None = None) -> str | None:
-    """把稿件標題疊在圖片下方（黑色漸層底＋白色粗體），覆寫原檔。成功回 None，失敗回原因。
+YELLOW = (255, 212, 0)
+
+
+def _highlight_span(title: str, lines: list[str], highlight: str | None) -> tuple[int, int] | None:
+    """回第二行內要上黃色的 (起, 迄) 字元範圍；沒有第二行回 None；highlight 不合格就整行。"""
+    if len(lines) < 2:
+        return None
+    line = lines[1]
+    hl = (highlight or "").strip()
+    if 2 <= len(hl) <= 8 and hl in title:
+        i = line.find(hl)
+        if i >= 0:
+            return i, i + len(hl)
+    return 0, len(line)
+
+
+def add_headline(path: Path, title: str, cfg: dict | None = None, highlight: str | None = None) -> str | None:
+    """把稿件標題疊在圖片下方（深紫黑漸層底條＋白色粗體黑描邊），覆寫原檔。成功回 None，失敗回原因。
+    最多 2 行（放不下才縮字，最小字級仍放不下才第 3 行）；第 2 行（或其中的 highlight 片段）為黃色。
     文字由程式繪製，不經生圖模型，所以不會有錯字。"""
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
     cfg = cfg or load_config()
     title = " ".join((title or "").split())
     if not title:
@@ -174,20 +198,31 @@ def add_headline(path: Path, title: str, cfg: dict | None = None) -> str | None:
         font, lines, size = _layout(draw, title, w - 2 * margin, w, font_path)
     except OSError as e:
         return f"字型載入失敗（{font_path}）：{e}"
+    lines = [(ln.rstrip("，、；：,;:").rstrip() or ln) for ln in lines]  # 行尾逗號等不顯示；「？！」與引號保留
     line_h = round(size * 1.3)
     block_h = line_h * len(lines)
-    shade_h = min(h, block_h + margin * 3)
-    shade = Image.new("L", (1, shade_h))
+    shade_h = min(h, max(round(h * 0.4), block_h + margin * 3))
+    ramp = Image.new("RGBA", (1, shade_h))
     for y in range(shade_h):
-        shade.putpixel((0, y), round(215 * min(1.0, y / max(1, shade_h * 0.45))))
-    black = Image.new("RGB", (w, shade_h), (0, 0, 0))
-    im.paste(black, (0, h - shade_h), shade.resize((w, shade_h)))
+        t = min(1.0, y / max(1.0, shade_h * 0.3))  # 上緣 30% 柔和過渡，其餘（文字區）近乎不透明
+        ramp.putpixel((0, y), (20, 10, 35, round(240 * t * t * (3 - 2 * t))))
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    overlay.paste(ramp.resize((w, shade_h)), (0, h - shade_h))
+    im = Image.alpha_composite(im.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(im)
+    span = _highlight_span(title, lines, highlight)
+    stroke = max(1, size // 18)
     y = h - margin - block_h
-    shadow = max(1, size // 25)
-    for line in lines:
-        draw.text((margin + shadow, y + shadow), line, font=font, fill=(0, 0, 0))
-        draw.text((margin, y), line, font=font, fill=(255, 255, 255))
+    for n, line in enumerate(lines):
+        if n == 1 and span:
+            parts = [(line[:span[0]], (255, 255, 255)), (line[span[0]:span[1]], YELLOW), (line[span[1]:], (255, 255, 255))]
+        else:
+            parts = [(line, (255, 255, 255))]
+        x = (w - sum(draw.textlength(t, font=font) for t, _c in parts)) / 2  # 置中
+        for t, col in parts:
+            if t:
+                draw.text((x, y), t, font=font, fill=col, stroke_width=stroke, stroke_fill=(0, 0, 0))
+                x += draw.textlength(t, font=font)
         y += line_h
     im.save(path, format="PNG")
     return None
