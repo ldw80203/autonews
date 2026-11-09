@@ -1,0 +1,221 @@
+[feeds]
+trends = "https://trends.google.com/trending/rss?geo=TW"
+
+# 中文新聞 RSS（2026-11-08 以 requests 實測：HTTP 200、>=10 則、日期可解析）。
+# NOWnews 沒有可用的 RSS（feedburner 回 HTML、/rss 系列 404），未加入。
+[[rss_feeds]]
+name = "自由時報"
+url = "https://news.ltn.com.tw/rss/all.xml"
+[[rss_feeds]]
+name = "ETtoday"
+url = "https://feeds.feedburner.com/ettoday/realtime"
+[[rss_feeds]]
+name = "公視新聞網"
+url = "https://news.pts.org.tw/xml/newsfeed.xml"
+[[rss_feeds]]
+name = "鏡週刊"
+url = "https://www.mirrormedia.mg/rss/news.xml"
+# category：選文權重用的類別（src\rank.py CATEGORIES）；沒標的由網址/關鍵詞判斷
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/politics"
+category = "政治"
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/social"
+category = "社會"
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/lifehealth"
+category = "生活科技"
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/mainland"
+category = "國際"
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/finance"
+category = "財經"
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/local"
+category = "社會"
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/culture"
+category = "娛樂"
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/sport"
+category = "體育"
+# 2026-11-09 使用者要求加奇聞來源（實測 HTTP 200：自由新奇 40 則、ETtoday 奇聞 50 則、ETtoday 寵物 50 則、中央社國際 20 則）
+[[rss_feeds]]
+name = "中央社"
+url = "https://feeds.feedburner.com/rsscna/intworld"
+category = "國際"
+[[rss_feeds]]
+name = "自由時報"
+url = "https://news.ltn.com.tw/rss/novelty.xml"
+category = "奇聞"
+[[rss_feeds]]
+name = "ETtoday"
+url = "https://feeds.feedburner.com/ettoday/novelty"
+category = "奇聞"
+[[rss_feeds]]
+name = "ETtoday"
+url = "https://feeds.feedburner.com/ettoday/pet"
+category = "奇聞"
+
+[timeouts]
+http = 20
+claude = 300
+codex_review = 300
+# 第六輪：Claude 審查員逾時（與 Codex 同時跑，預算取兩者較大值）
+claude_review = 300
+codex_image = 900
+
+[originality]
+# 改寫稿與任一來源的最長連續重疊字數（去標點空白後）超過此值即丟棄
+# 2026-11-09 使用者裁示放寬：20 -> 40（單一來源下實測重疊 24–32 字全被擋，0 產出）-> 60（衝發文量）
+max_overlap_chars = 60
+min_commentary_chars = 30
+
+[select]
+min_text_chars = 200
+# 每輪最多處理幾個候選（2026-11-09 使用者裁示：40 -> 10，10 個內選不出就跳過這一小時）
+max_candidates_fetch = 10
+# 時事需要的不同可信出版者數。2026-11-09 使用者裁示：降為 1（一家可信媒體＋事實關雙審通過即可發）
+min_news_publishers = 1
+
+[schedule]
+# 2026-11-09 使用者裁示：24 小時、每小時一則。工作排程器每小時整點跑 --max 1，排到下一個整點。
+slots = ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
+         "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"]
+min_lead_minutes = 15
+# 2026-11-09 使用者裁示：產出後立即公開（不排程）。false = 排到下一個空時段（slots）
+publish_now = true
+
+[rank]
+# 選文權重（src\rank.py）。2026-11-09 使用者裁示：熱度優先、類別均衡、政治照熱度不特別處理
+weights = { heat = 50, fresh = 25, category = 10, publisher = 5, writable = 10 }
+# 沒有點閱數可量的類別給熱度基本分（0–1）
+heat_base = { "奇聞" = 0.3 }
+# 標題字元二元組 Jaccard >= 此值視為同一則新聞
+same_story_similarity = 0.35
+# 同一則新聞的其他家報導併進來源（寫稿整合多家說法），最多幾篇
+max_merged_sources = 4
+
+[language]
+# CJK 字比例門檻：話題標題、來源內文都必須達標，否則視為非中文
+min_cjk_ratio_title = 0.3
+min_cjk_ratio_body = 0.5
+
+[run]
+# 整體截止時間（分鐘）；到期後不再開新話題。install_schedule.ps1 的 ExecutionTimeLimit 讀同一個值。
+deadline_minutes = 55
+# 每個步驟開始前，剩餘時間（扣掉 reserve_minutes 收尾時間）必須 >= 該步驟最壞耗時，否則不開始該步驟
+reserve_minutes = 10
+# 稿件被閘門退回後的重寫次數（2026-11-09 使用者裁示：2 → 1，不過就換下一題）
+max_rewrites = 1
+# 單輪內 claude CLI 失敗達此次數（多半是額度用完）就停止本輪
+max_claude_failures = 3
+
+[image]
+# 600 -> 1500：依內容生成的配圖 prompt（src\imagespec.py）含畫面、人像/插畫條件、圖中文字與版面規定
+max_prompt_chars = 1500
+# 依每篇內容生成配圖（src\imagespec.py）；false = 只用固定場景模板＋程式疊字
+content_image = true
+# 生圖後由程式把稿件標題疊在圖片下方（2026-11-09 使用者要求附圖要有大標題）
+headline_font = 'C:\Windows\Fonts\msjhbd.ttc'
+
+[freshness]
+# slot 時間 - 最新來源發佈時間 超過此小時數就丟棄；來源抓不到發佈時間視為不合格來源
+max_age_hours = 18
+# 這些類別（src\rank.py 判斷）不檢查多舊、新鮮度不扣分；仍要求來源有發佈時間。2026-11-09 使用者裁示：奇聞不限
+unlimited_categories = ["奇聞"]
+# 來源發佈時間比現在晚超過此小時數，視為時間解析異常，來源不合格（2026-11-08 第五輪：2 -> 0.25，只容許時鐘誤差）
+max_future_hours = 0.25
+
+[relevance]
+# 關鍵詞 NFKC 正規化後的中文字 bigram（相鄰兩字）與英數 token，在來源「標題 + 內文前 body_chars 字」中
+# 出現的比例 >= min_match_ratio 即算相關。
+min_match_ratio = 0.6
+body_chars = 1500
+
+[time]
+# 最終 caption（標題、正文、hashtag）不可出現的相對時間詞
+banned_relative_words = ["明天", "明日", "後天", "今晚", "今天", "今日", "今早", "昨天", "昨日", "昨晚", "明早", "稍後", "待會", "即將", "馬上", "下一場", "下週", "本週", "這週", "週末",
+  "今年", "明年", "去年", "本月", "上月", "下月", "上週", "目前", "近日", "近期", "最近", "最新", "現在", "本季", "稍早", "剛剛",
+  "戰績", "排名", "累計"]
+# 易變數據（到發佈時可能已改變）：比對前 NFKC + 去空白；任一 regex 命中就拒絕
+volatile_patterns = ["\\d+勝\\d+敗", "\\d+勝\\d+負", "\\d+連勝", "\\d+連敗", "第\\d+名", "股價", "收盤", "即時比分", "暫居", "暫列"]
+
+[review]
+# 2026-11-09 使用者裁示：取消 AI 審稿（Codex＋Claude 事實關），只留確定性閘門。改回 true 即恢復。
+ai_review = false
+# 第二審查員；最終 pass = Codex pass OR Claude pass（2026-11-09 裁示）。2026-11-09 省額度：opus → sonnet
+claude_model = "sonnet"
+# 每筆 claim 的 evidence：去空白後最少字數；長度上限 = 句子核心長度 * max_evidence_ratio + max_evidence_extra
+min_evidence_chars = 6
+max_evidence_ratio = 3
+max_evidence_extra = 40
+# 句子的文字/數字字元出現在 evidence 中的比例下限（2026-11-08 以 posts/ 內 190 筆真實 claim 校準：0.5 擋下 22 筆鬆散改寫）
+min_char_recall = 0.5
+
+[structure]
+# 正文：先至少這麼多句事實句，最後才是唯一一段【小編觀點】
+min_fact_sentences = 3
+
+[opinion]
+# 【小編觀點】段禁止出現的詞（職稱、政黨、指控用語）；另有程式規則：不可有任何數字（含中文大數）、英文字、
+# 話題關鍵詞、Codex 列出的 named_entities、「」內的詞
+banned_words = ["總統", "副總統", "院長", "部長", "市長", "縣長", "議長", "議員", "立委", "主席", "董事長", "總裁",
+  "執行長", "總經理", "教練", "總教練", "法官", "檢察官", "檢方", "警方", "發言人", "政黨", "國民黨", "民進黨", "民眾黨",
+  "貪污", "貪汙", "挪用", "起訴", "收賄", "詐騙", "涉嫌", "違法", "犯罪", "外遇"]
+
+[attribution]
+# 來源中「句首到 evidence 結尾」出現這些詞，稿件那一句就必須保留歸屬／不確定語氣（含 sentence_markers 任一）
+source_markers = ["據報", "據悉", "據了解", "據傳", "據稱", "據指出", "消息指出", "消息人士", "知情人士", "傳出", "傳聞",
+  "外傳", "盛傳", "預期", "預料", "可能", "疑似", "恐將", "或將", "不排除"]
+sentence_markers = ["據", "傳", "消息", "知情", "預期", "預料", "預計", "預估", "可能", "疑似", "恐", "或將", "可望", "有望",
+  "不排除", "或許", "也許", "報導", "指出", "表示", "稱"]
+
+[hashtags]
+# hashtag 只能是：話題關鍵詞或合格來源標題中出現過的詞（子字串），或下列固定白名單
+whitelist = ["#新聞", "#時事", "#熱門", "#熱門話題", "#網友熱議", "#好笑", "#台灣", "#體育", "#運動", "#棒球", "#職棒",
+  "#籃球", "#足球", "#網球", "#財經", "#股市", "#科技", "#娛樂", "#影視", "#音樂", "#生活", "#國際", "#社會", "#環保",
+  "#交通", "#天氣", "#美食", "#旅遊", "#政治", "#教育", "#文化", "#消費", "#房市", "#職場", "#中華隊", "#NBA", "#MLB"]
+
+[media.publishers]
+# 可信媒體白名單（正規化網域 -> 出版者）。沒列的網域一律不算來源；同一出版者多個網域只算一家。
+# 轉載平台（Yahoo、LINE TODAY、MSN）不列入：無法確認原始出版者。2026-11-08 第五輪建立，需使用者確認。
+"ltn.com.tw" = "自由時報"
+"ettoday.net" = "東森"
+"ebc.net.tw" = "東森"
+"udn.com" = "聯合報系"
+"chinatimes.com" = "旺旺中時"
+"ctee.com.tw" = "旺旺中時"
+"ctwant.com" = "旺旺中時"
+"cna.com.tw" = "中央社"
+"pts.org.tw" = "公視"
+"mirrormedia.mg" = "鏡傳媒"
+"mnews.tw" = "鏡傳媒"
+"setn.com" = "三立"
+"tvbs.com.tw" = "TVBS"
+"ttv.com.tw" = "台視"
+"cts.com.tw" = "華視"
+"ftvnews.com.tw" = "民視"
+"nownews.com" = "NOWnews"
+"storm.mg" = "風傳媒"
+"newtalk.tw" = "新頭殼"
+"rti.org.tw" = "中央廣播電臺"
+"businesstoday.com.tw" = "今周刊"
+"cw.com.tw" = "天下雜誌"
+"gvm.com.tw" = "遠見"
+"bnext.com.tw" = "數位時代"
+"technews.tw" = "科技新報"
+"upmedia.mg" = "上報"
+"thenewslens.com" = "關鍵評論網"
+"twreporter.org" = "報導者"
+"cnyes.com" = "鉅亨網"
+"techbang.com" = "T客邦"

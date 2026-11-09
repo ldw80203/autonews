@@ -1,0 +1,7 @@
+feedparser
+trafilatura
+requests
+python-dotenv
+pytest
+pillow
+tzdata

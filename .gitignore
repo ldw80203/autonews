@@ -1,0 +1,16 @@
+.env
+.venv/
+data/
+posts/
+reports/
+__pycache__/
+*.pyc
+.pytest_cache/
+STOP
+logs/
+.claude/
+# 個人進度紀錄（含本機路徑、粉專 ID、貼文連結），不公開
+PROGRESS.md
+# 本機修改前的備份（.bak-yyyyMMdd），不進 git
+*.bak-*
+*.variants-draft-*
