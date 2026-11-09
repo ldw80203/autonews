@@ -104,6 +104,8 @@ heat_base = { "奇聞" = 0.3 }
 same_story_similarity = 0.35
 # 同一則新聞的其他家報導併進來源（寫稿整合多家說法），最多幾篇
 max_merged_sources = 4
+# 同一事件去重：最近幾小時內發過的貼文，標題相似直接跳過；寫稿模型再判斷是否同一起事件（含後續、反應）
+recent_post_hours = 48
 
 [language]
 # CJK 字比例門檻：話題標題、來源內文都必須達標，否則視為非中文

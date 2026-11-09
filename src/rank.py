@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -112,6 +112,27 @@ def today_posts(con, today: str, pubs: dict) -> list[tuple[str, str | None, str]
     return out
 
 
+def _recent_posts(con, now: datetime, hours: float) -> list[tuple[str, str]]:
+    """最近 hours 小時內已排/已發的 live 貼文 (話題詞, 實際貼文標題)；標題讀不到就空字串。"""
+    cutoff = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+    rows = con.execute("SELECT keyword, path FROM posts WHERE mode='live' AND status IN ('pending','scheduled') "
+                       "AND slot >= ? ORDER BY slot", (cutoff,)).fetchall()
+    out = []
+    for kw, path in rows:
+        title = ""
+        try:
+            title = json.loads((Path(path) / "draft.json").read_text(encoding="utf-8")).get("title", "")
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        out.append((kw, title if isinstance(title, str) else ""))
+    return out
+
+
+def recent_titles(con, now: datetime, hours: float) -> list[str]:
+    """給寫稿模型看的『最近已發標題』清單，用來判斷是不是同一起事件。"""
+    return [f"{t}（{kw}）" if t and t != kw else kw for kw, t in _recent_posts(con, now, hours)]
+
+
 def score(topic: dict, cfg: dict, now: datetime, history: list, coverage: int) -> tuple[float, dict]:
     rc, pubs = cfg["rank"], cfg["media"]["publishers"]
     cat = topic_category(topic)
@@ -146,10 +167,18 @@ def rank(cands: list[dict], con, cfg: dict, now: datetime) -> tuple[list[dict], 
     """回 (依分數排序的候選, 跳過清單)。每個候選寫入 topic['rank'] = {score, 各分項}。"""
     pubs, rc = cfg["media"]["publishers"], cfg["rank"]
     skipped, pool = [], []
+    th = rc.get("same_story_similarity", 0.35)
+    # 2026-11-09 使用者回報同一事件（黃仁勳婚外情）一天發三篇：先用標題相似度擋掉最近已發過的同一則
+    posted = [(kw, _bigrams(kw), _bigrams(title)) for kw, title in
+              _recent_posts(con, now, rc.get("recent_post_hours", 48))]
     for t in cands:
+        g = _bigrams(t["keyword"])
+        dup = next((kw for kw, gk, gt in posted if _similar(g, gk, th) or _similar(g, gt, th)), None)
         if t.get("origin") == "trends" and not any(sel.trusted_media(s.get("url", ""), pubs)
                                                    for s in t.get("sources", [])):
             skipped.append({"keyword": t["keyword"], "reason": "排序：Trends 題目沒有可信媒體來源，跳過"})
+        elif dup:
+            skipped.append({"keyword": t["keyword"], "reason": f"排序：和最近已發的「{dup}」是同一則新聞，跳過"})
         else:
             pool.append(t)
     grams = [_bigrams(t["keyword"]) for t in pool]
@@ -160,7 +189,6 @@ def rank(cands: list[dict], con, cfg: dict, now: datetime) -> tuple[list[dict], 
             cluster[i] = cluster[cluster[i]]
             i = cluster[i]
         return i
-    th = rc.get("same_story_similarity", 0.35)
     for i in range(len(pool)):
         for j in range(i + 1, len(pool)):
             if _similar(grams[i], grams[j], th):

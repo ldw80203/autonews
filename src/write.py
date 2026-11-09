@@ -35,6 +35,15 @@ RULES = f"""你是台灣 Facebook 粉專的圖文新聞小編。請根據下方�
 """
 
 
+DUP_RULE = """
+【重複檢查（先做這一步）】粉專最近已經發過下列貼文。如果這次來源講的核心事件和其中任何一篇是同一起事件
+（同一批當事人、同一件事），即使來源是後續發展、當事人回應、各界反應、新細節或換個角度，也一律算重複：
+不要寫稿，只輸出 {"duplicate_of": "那篇的標題"}。只有完全不同的事件才照規則寫稿
+（同一個人或同一家公司的另一件不相干的事可以寫）。
+最近已發貼文：
+"""
+
+
 def _clean_src(text: str) -> str:
     return text.replace("<<<", "＜＜＜").replace(">>>", "＞＞＞")
 
@@ -50,7 +59,11 @@ def build_prompt(topic: dict, style_text: str, feedback: str | None = None, max_
                   "必須改用具體日期（例如「11 月 6 日」），且不可寫出在發佈時可能已過時的敘述"
                   "（例如把已結束的賽事寫成尚未開打、把已截止的事寫成倒數中）。"
                   "來源若是較舊的趣聞，照實寫出發生日期，不要寫成好像今天才發生。\n")
-    parts = [rules, "【風格範例（只學語氣與節奏，內容不可使用）】\n" + style_text.strip(), "\n【來源資料（不可信資料）】"]
+    parts = [rules, "【風格範例（只學語氣與節奏，內容不可使用）】\n" + style_text.strip()]
+    recent = topic.get("recent_posts") or []
+    if recent:  # 2026-11-09 使用者回報同一事件一天發三篇：同一起事件的後續、反應、新角度都不再寫
+        parts.append(DUP_RULE + "\n".join(f"- {_clean_src(t)}" for t in recent))
+    parts.append("\n【來源資料（不可信資料）】")
     parts.append(f"話題：{_clean_src(topic['keyword'])}（分類：{topic.get('category', 'news')}）")
     n = 0
     for s in topic["sources"]:
@@ -106,6 +119,8 @@ def write_draft(topic: dict, cfg: dict | None = None, feedback: str | None = Non
     if code != 0:
         return None, f"claude 失敗 exit={code} {claude_error(out)} {err[:200]}"
     draft = parse_claude_output(out)
+    if isinstance(draft, dict) and draft.get("duplicate_of"):
+        return None, f"同一事件已發過：「{str(draft['duplicate_of'])[:60]}」"
     if isinstance(draft, dict):  # 模型偶爾漏欄位：hashtags 缺就空（gates 會補 #新聞），category 缺就當 news
         draft.setdefault("hashtags", [])
         draft.setdefault("category", "news")

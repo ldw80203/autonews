@@ -440,6 +440,8 @@ def main(argv: list[str] | None = None) -> int:
                 dropped.append({"keyword": topic["keyword"], "reason": "已無可用時段（>=15 分鐘）"})
                 log("無可用時段，停止")
                 break
+            # 寫稿模型用來判斷是否和最近已發的是同一起事件（每輪重算，含本輪剛發的）
+            topic["recent_posts"] = rank.recent_titles(con, datetime.now(TZ), cfg["rank"].get("recent_post_hours", 48))
             post_dir, draft, caption, cited, why = process_topic(topic, cfg, terms, post_root, slot)
             if not draft:
                 dropped.append({"keyword": topic["keyword"], "reason": why})
